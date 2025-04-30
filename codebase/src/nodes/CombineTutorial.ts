@@ -1,0 +1,296 @@
+import Node from './Node.js';
+import fs from 'fs-extra';
+import path from 'path';
+import { 
+  SharedState, 
+  Abstraction, 
+  Chapter, 
+  RelationshipGraph, 
+  CodebaseStats,
+  CombineTutorialConfig 
+} from '../types.js';
+
+/**
+ * Node for finalizing and combining tutorial content.
+ * Creates a structured tutorial with table of contents, chapters, and diagrams.
+ */
+class CombineTutorial extends Node {
+  private outputDir: string;
+
+  /**
+   * Creates a new CombineTutorial instance.
+   * @param config - Configuration options.
+   */
+  constructor(config: CombineTutorialConfig = {}) {
+    super('CombineTutorial');
+    this.outputDir = config.outputDir || './tutorial';
+  }
+  
+  /**
+   * Prepares for tutorial generation by validating input.
+   * @param shared - The shared workflow state.
+   * @returns Preparation data for tutorial generation.
+   */
+  async prepare(shared: SharedState): Promise<{
+    projectName: string;
+    language: string;
+    abstractions: Abstraction[];
+    chapters: Chapter[];
+    relationship_graph: RelationshipGraph | undefined;
+    stats: CodebaseStats | undefined;
+  }> {
+    if (!shared.chapters || !Array.isArray(shared.chapters) || shared.chapters.length === 0) {
+      throw new Error('No chapters available for tutorial generation');
+    }
+    
+    return {
+      projectName: shared.projectName || '',
+      language: shared.language || 'unknown',
+      abstractions: shared.abstractions || [],
+      chapters: shared.chapters,
+      relationship_graph: shared.relationship_graph,
+      stats: shared.stats
+    };
+  }
+  
+  /**
+   * Generates a Mermaid diagram representing abstraction relationships.
+   * @param relationships - Relationship graph data.
+   * @param abstractions - Abstractions data.
+   * @returns Mermaid diagram markdown.
+   */
+  generateMermaidDiagram(relationships: RelationshipGraph, abstractions: Abstraction[]): string {
+    // Generate Mermaid flowchart diagram
+    let mermaid = '```mermaid\nflowchart TD\n';
+    
+    // Add nodes to diagram
+    const nodes = relationships.nodes || [];
+    nodes.forEach(node => {
+      const abstraction = abstractions[node.id];
+      if (abstraction) {
+        mermaid += `  ${node.id}["${abstraction.name}"]\n`;
+      }
+    });
+    
+    // Add relationships to diagram
+    const relationshipDetails = relationships.relationships?.details || [];
+    relationshipDetails.forEach(rel => {
+      mermaid += `  ${rel.from} --> |${rel.label}| ${rel.to}\n`;
+    });
+    
+    mermaid += '```';
+    return mermaid;
+  }
+  
+  /**
+   * Creates the main index file with table of contents.
+   * @param data - Data for tutorial generation.
+   * @returns Path to the generated index file.
+   */
+  async createIndexFile(data: {
+    projectName: string;
+    language: string;
+    chapters: Chapter[];
+    relationship_graph?: RelationshipGraph;
+    abstractions: Abstraction[];
+    stats?: CodebaseStats;
+  }): Promise<string> {
+    const { projectName, language, chapters, relationship_graph, abstractions, stats } = data;
+    
+    // Create output directory if it doesn't exist
+    const outputPath = path.resolve(this.outputDir);
+    await fs.ensureDir(outputPath);
+    
+    // Generate table of contents
+    const tocItems = chapters.map(chapter => 
+      `- [Chapter ${chapter.chapterNumber}: ${chapter.title}](./chapter-${chapter.chapterNumber}.md)`
+    ).join('\n');
+    
+    // Generate relationship diagram if available
+    let diagramSection = '';
+    if (relationship_graph && relationship_graph.relationships.count > 0) {
+      diagramSection = `
+## Project Structure Diagram
+
+The following diagram shows the relationships between key abstractions in this project:
+
+${this.generateMermaidDiagram(relationship_graph, abstractions)}
+`;
+    }
+    
+    // Generate project statistics
+    let statsSection = '';
+    if (stats) {
+      statsSection = `
+## Project Statistics
+
+- **Total Files**: ${stats.totalFiles}
+- **Total Size**: ${Math.round(stats.totalSize / 1024)} KB
+- **Language Distribution**: ${Object.entries(stats.extensionCounts || {})
+        .map(([ext, count]) => `${ext}: ${count} files`)
+        .join(', ')}
+`;
+    }
+    
+    // Generate index file content
+    const indexContent = `# ${projectName} Tutorial
+
+A comprehensive guide to understanding the ${projectName} codebase.
+
+## Overview
+
+This tutorial provides a structured walkthrough of the ${projectName} project, which is primarily written in ${language}.
+The tutorial is organized into ${chapters.length} chapters, each focusing on a key abstraction or component of the system.
+
+## Table of Contents
+
+${tocItems}
+${diagramSection}
+${statsSection}
+
+## How to Use This Tutorial
+
+1. Start with Chapter 1 and proceed sequentially through the chapters.
+2. Each chapter builds on concepts from previous chapters.
+3. Code examples are provided to illustrate key concepts.
+4. Use the relationship diagram to understand how components interact.
+
+---
+
+Generated by AI-Driven Codebase Tutorial Generator
+`;
+    
+    // Write index file
+    const indexPath = path.join(outputPath, 'index.md');
+    await fs.writeFile(indexPath, indexContent, 'utf8');
+    
+    return indexPath;
+  }
+  
+  /**
+   * Creates individual chapter files.
+   * @param data - Data for chapter generation.
+   * @returns Paths to generated chapter files.
+   */
+  async createChapterFiles(data: {
+    chapters: Chapter[];
+  }): Promise<string[]> {
+    const { chapters } = data;
+    const outputPath = path.resolve(this.outputDir);
+    
+    // Create each chapter file
+    const chapterPaths = await Promise.all(
+      chapters.map(async (chapter) => {
+        const chapterFileName = `chapter-${chapter.chapterNumber}.md`;
+        const chapterPath = path.join(outputPath, chapterFileName);
+        
+        // Add chapter number to title if not already present
+        let content = chapter.content;
+        if (!content.trim().startsWith(`# Chapter ${chapter.chapterNumber}`)) {
+          content = `# Chapter ${chapter.chapterNumber}: ${chapter.title}\n\n${content}`;
+        }
+        
+        // Add navigation links
+        const prevChapter = chapter.chapterNumber > 1 
+          ? `[← Previous Chapter](./chapter-${chapter.chapterNumber - 1}.md)` 
+          : '';
+        
+        const nextChapter = chapter.chapterNumber < chapters.length 
+          ? `[Next Chapter →](./chapter-${chapter.chapterNumber + 1}.md)` 
+          : '';
+        
+        const nav = `
+---
+
+${prevChapter} | [Table of Contents](./index.md)${nextChapter ? ` | ${nextChapter}` : ''}
+`;
+        
+        content += nav;
+        
+        // Write chapter file
+        await fs.writeFile(chapterPath, content, 'utf8');
+        
+        return chapterPath;
+      })
+    );
+    
+    return chapterPaths;
+  }
+  
+  /**
+   * Executes the tutorial generation process.
+   * @param prepData - Preparation data for tutorial generation.
+   * @returns Generation results.
+   */
+  async execute(prepData: {
+    projectName: string;
+    language: string;
+    abstractions: Abstraction[];
+    chapters: Chapter[];
+    relationship_graph?: RelationshipGraph;
+    stats?: CodebaseStats;
+  }): Promise<{
+    outputDir: string;
+    indexPath: string;
+    chapterPaths: string[];
+  }> {
+    try {
+      this.logger.info(`Generating tutorial in ${this.outputDir}`);
+      
+      // Create output directory
+      await fs.ensureDir(path.resolve(this.outputDir));
+      
+      // Create index file with table of contents
+      const indexPath = await this.createIndexFile(prepData);
+      this.logger.info(`Created index file: ${indexPath}`);
+      
+      // Create individual chapter files
+      const chapterPaths = await this.createChapterFiles(prepData);
+      this.logger.info(`Created ${chapterPaths.length} chapter files`);
+      
+      return {
+        outputDir: this.outputDir,
+        indexPath,
+        chapterPaths
+      };
+    } catch (error) {
+      this.logger.error(`Error generating tutorial: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
+  }
+  
+  /**
+   * Updates the shared state with tutorial generation results.
+   * @param shared - The shared workflow state.
+   * @param prepData - Data from preparation phase.
+   * @param execResult - Result from execution phase.
+   * @returns Updated shared state.
+   */
+  async postProcess(
+    shared: SharedState, 
+    prepData: {
+      projectName: string;
+      language: string;
+      abstractions: Abstraction[];
+      chapters: Chapter[];
+      relationship_graph?: RelationshipGraph;
+      stats?: CodebaseStats;
+    }, 
+    execResult: {
+      outputDir: string;
+      indexPath: string;
+      chapterPaths: string[];
+    }
+  ): Promise<SharedState> {
+    return {
+      ...shared,
+      tutorial: {
+        outputDir: execResult.outputDir,
+        indexPath: execResult.indexPath,
+        chapterPaths: execResult.chapterPaths
+      }
+    };
+  }
+}
+
+export default CombineTutorial;
